@@ -1,7 +1,9 @@
 use std::{fs::{self}, io, path::Path, sync::mpsc};
 
 use clap::Parser;
+use log::LevelFilter;
 use notify::{Event, Result, RecursiveMode, Watcher};
+use simplelog::{Config, WriteLogger};
 
 #[derive(Parser)]
 struct Cli {
@@ -37,9 +39,9 @@ fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> 
 pub fn initial_sync(watch_files: &Vec<String>, user_dotfiles: &str) {
     for f in watch_files {
         let directory_name = f.split("/").last().unwrap();
-        let new_path = user_dotfiles.to_owned() + directory_name;
+        let new_path = user_dotfiles.to_owned() + "/" + directory_name;
 
-        println!("Copying {:?} to {:?}", f.as_str(), new_path.as_str());
+        log::info!("Copying {:?} to {:?}", f.as_str(), new_path.as_str());
         let _ = copy_dir_all(Path::new(f.as_str()), Path::new(new_path.as_str()));
     }
 }
@@ -47,43 +49,51 @@ pub fn initial_sync(watch_files: &Vec<String>, user_dotfiles: &str) {
 pub fn get_watch_files(config_file_path: &str) -> Vec<String> {
     let content = match fs::read_to_string(config_file_path) {
         Ok(content) => content,
-        Err(_) => {
-            panic!("Error reading config file");
+        Err(e) => {
+            log::error!("Error reading config file {:?}", e);
+            panic!("Error reading config file, see log file for details");
         }
     };
 
     let watch_files: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     for file in watch_files.iter() {
-        println!("Verifying file {:?}", file);
+        log::info!("Verifying file {:?}", file);
         if !verify(file) {
-            panic!("Error reading file");
+            log::error!("Error reading file {:?}", file);
         }
     }
     
     return watch_files;
 }
 fn main() -> Result<()> {
+    WriteLogger::init(
+        LevelFilter::Info,
+        Config::default(),
+        fs::File::create("~.oxidots.log")?
+    ).unwrap();
+
     let cli = Cli::parse();
     let watch_files: Vec<String> = get_watch_files(cli.config_file.as_str());
 
     let (tx, rx) = mpsc::channel::<Result<Event>>();
-
     let mut watcher = notify::recommended_watcher(tx)?;
+    
     initial_sync(&watch_files, cli.user_dotfiles.as_str());
+
     for file in watch_files.iter() {
-        println!("Watching --> {:?}", file.as_str());
+        log::info!("Watching --> {:?}", file.as_str());
         watcher.watch(Path::new(file.as_str()), RecursiveMode::NonRecursive)?;
     }
 
     for res in rx {
         match res {
             Ok(event) => {
-                if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Any)) {
-                    println!("Modified file: {:?}", event.paths.get(0));
+                if event.kind == notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Content)) {
+                    log::info!("Modified file: {:?}", event.paths.get(0));
                 } 
             }
-            Err(e) => println!("watch error: {:?}", e),
+            Err(e) => log::error!("watch error: {:?}", e),
         }
     }
 
