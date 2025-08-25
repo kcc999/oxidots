@@ -2,7 +2,7 @@ mod systemd;
 mod watcher;
 
 use clap::Parser;
-use git2::{IndexAddOption, Repository};
+use git2::{IndexAddOption, Repository, Signature, StatusOptions};
 use log::LevelFilter;
 use notify::Result;
 use simplelog::{Config as LogConfig, SimpleLogger, WriteLogger};
@@ -80,46 +80,94 @@ fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> 
 fn initial_sync(watch_files: &Vec<String>, user_dotfiles: &str) {
     for f in watch_files {
         let src_path = Path::new(f);
-        let dir_name = src_path.file_name().unwrap();
+        // Handle paths that may end with a trailing separator where file_name() is None
+        let dir_name = src_path
+            .file_name()
+            .or_else(|| {
+                use std::path::Component;
+                src_path
+                    .components()
+                    .rev()
+                    .find_map(|c| match c {
+                        Component::Normal(os) => Some(os),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_default();
         let dst_path = Path::new(user_dotfiles).join(dir_name);
 
         let _ = copy_dir_all(src_path, dst_path);
     }
 }
 
-pub fn git_sync(user_dotfiles: &str) {
-    let repo = match Repository::open(user_dotfiles) {
+fn ensure_repo(path: &str) -> Repository {
+    if !Path::new(path).exists() {
+        let _ = fs::create_dir_all(path);
+    }
+    match Repository::open(path) {
         Ok(repo) => repo,
-        Err(e) => panic!("Failed to open: {}", e),
-    };
+        Err(_) => Repository::init(path).expect("Failed to init git repo"),
+    }
+}
+
+pub fn git_sync(user_dotfiles: &str) {
+    let repo = ensure_repo(user_dotfiles);
+
+    // Check for working directory changes before staging
+    let mut status_opts = StatusOptions::new();
+    status_opts
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+
+    let statuses = repo.statuses(Some(&mut status_opts)).unwrap();
+    log::debug!(
+        "git status entries: {} (wd: {:?})",
+        statuses.len(),
+        repo.workdir()
+    );
+    if statuses.len() == 0 {
+        log::info!("No changes detected in working directory; skipping commit");
+        return;
+    }
 
     let mut index = repo.index().unwrap();
-
-    let _ = index.add_all(["."].iter(), IndexAddOption::DEFAULT, None);
+    let _ = index.add_all(["."].iter(), IndexAddOption::DEFAULT | IndexAddOption::FORCE, None);
     let _ = index.write();
-
-    println!("DEBUG: Index has {} entries", index.len());
 
     let tree_id = index.write_tree().unwrap();
     let tree = repo.find_tree(tree_id).unwrap();
 
-    let parent_commit = match repo.head() {
-        Ok(head) => {
-            let target = head.target().unwrap();
-            Some(repo.find_commit(target).unwrap())
+    let mut parents: Vec<git2::Commit> = Vec::new();
+    if let Ok(head) = repo.head() {
+        if let Some(target) = head.target() {
+            if let Ok(commit) = repo.find_commit(target) {
+                parents.push(commit);
+            }
         }
-        Err(_) => None, // No previous commits (initial commit)
-    };
+    }
 
     let message: &str = "Oxidots: update";
 
+    let sig = match repo.signature() {
+        Ok(s) => s,
+        Err(_) => match Signature::now("Oxidots", "oxidots@localhost") {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Failed to create signature: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
     let commit = repo.commit(
         Some("HEAD"),
-        &repo.signature().unwrap(),
-        &repo.signature().unwrap(),
+        &sig,
+        &sig,
         message,
         &tree,
-        &[&parent_commit.unwrap()], // @TODO: Will panic if no parent commit
+        &parent_refs,
     );
 
     println!("DEBUG COMMIT {:?}", commit);
@@ -132,6 +180,8 @@ fn main() -> Result<()> {
     let watch_dirs = get_watch_dirs(cli.config_file.as_str());
 
     initial_sync(&watch_dirs, cli.user_dotfiles.as_str());
+    // Create an initial snapshot commit so subsequent updates are diffs
+    git_sync(cli.user_dotfiles.as_str());
 
     if cli.systemd {
         systemd::maybe_start_watchdog();
@@ -222,5 +272,20 @@ mod tests {
         git_sync(repo_dir.path().to_str().unwrap());
         let after = repo.head().unwrap().target().unwrap();
         assert_ne!(before, after, "HEAD should advance after git_sync");
+    }
+
+    #[test]
+    fn git_sync_initializes_missing_repo() {
+        let repo_dir = TempDir::new().unwrap();
+        // No repo initialized here on purpose
+        // Create a file so there is something to commit after init
+        let f = repo_dir.path().join("test.txt");
+        write_file(&f, "hello\n");
+
+        // Should create repo and commit
+        git_sync(repo_dir.path().to_str().unwrap());
+
+        let repo = Repository::open(repo_dir.path()).unwrap();
+        assert!(repo.head().is_ok(), "HEAD should exist after initial sync/commit");
     }
 }

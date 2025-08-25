@@ -61,18 +61,11 @@ oxidots <config_file> <dotfiles_repo> [--systemd]
 - `config_file`: A text file with one path per line, each path is a directory to watch. Example:
   - `/home/you/.config/nvim`
   - `/home/you/.config/alacritty`
-- `dotfiles_repo`: Path to a local Git repository where Oxidots mirrors directories and commits on change.
+- `dotfiles_repo`: Path to a local directory where Oxidots mirrors directories and commits on change. If it is not a Git repo, Oxidots will initialize one automatically.
 - `--systemd`: Enables sd_notify readiness and optional watchdog pings; logs are sent to journald.
 
 Notes:
-- The `dotfiles_repo` must be an existing Git repository. Ensure it has an initial commit; otherwise the current commit logic will fail on first run. Quick setup:
-
-```
-mkdir -p /path/to/dotfiles && cd /path/to/dotfiles
-git init
-printf "readme\n" > .keep
-git add . && git commit -m "Initial commit"
-```
+- Initial snapshot: Oxidots performs an initial directory copy, and commits changes on subsequent file modifications. To force an immediate first commit, make a trivial change in one of the watched files (e.g., `touch <file>` and save) after startup.
 
 ## Build
 
@@ -81,6 +74,16 @@ cargo build --release
 ```
 
 The resulting binary will be at `target/release/oxidots`.
+
+## Tests
+
+Run unit tests:
+
+```
+cargo test
+```
+
+If you hit linker errors for `git2`/`libgit2`, install your system's development libraries (e.g., Debian/Ubuntu: `sudo apt install libgit2-dev pkg-config`) or ask to switch to a vendored `libgit2` build.
 
 ## How It Works (brief)
 
@@ -93,4 +96,4 @@ The resulting binary will be at `target/release/oxidots`.
 
 - No logs in systemd mode: Ensure the service runs with `--systemd`; check `journalctl -u oxidots`.
 - Watchdog timeouts: Increase `WatchdogSec` or check system load; Oxidots pings at half the watchdog interval.
-- First commit failure: Initialize the target repo and create an initial commit as shown above.
+- No initial commit: The repo is initialized automatically if missing. The first commit happens on the first detected change; make a trivial edit to trigger it.

@@ -1,9 +1,46 @@
 use notify::{Event, Result, RecursiveMode, Watcher};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::git_sync;
 use crate::systemd;
+
+fn mirror_modified_file(
+    src_file: &Path,
+    watch_dirs: &[String],
+    user_dotfiles: &str,
+) -> std::io::Result<Option<PathBuf>> {
+    // Find which watch_dir this file belongs to
+    for d in watch_dirs {
+        let d_path = Path::new(d);
+        if src_file.starts_with(d_path) {
+            // destination base is <user_dotfiles>/<basename(d)>
+            let base_name = d_path
+                .file_name()
+                .or_else(|| {
+                    use std::path::Component;
+                    d_path
+                        .components()
+                        .rev()
+                        .find_map(|c| match c {
+                            Component::Normal(os) => Some(os),
+                            _ => None,
+                        })
+                })
+                .unwrap_or_default();
+
+            let rel = src_file.strip_prefix(d_path).unwrap_or(src_file);
+            let dst = Path::new(user_dotfiles).join(base_name).join(rel);
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(src_file, &dst)?;
+            return Ok(Some(dst));
+        }
+    }
+    Ok(None)
+}
 
 pub fn watch(watch_dirs: Vec<String>, user_dotfiles: &str, systemd_mode: bool) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Result<Event>>();
@@ -14,7 +51,8 @@ pub fn watch(watch_dirs: Vec<String>, user_dotfiles: &str, systemd_mode: bool) -
 
     for file in watch_dirs.iter() {
         log::info!("Watching --> {:?}", file.as_str());
-        watcher.watch(Path::new(file.as_str()), RecursiveMode::NonRecursive)?;
+        // Watch recursively so nested file changes are detected
+        watcher.watch(Path::new(file.as_str()), RecursiveMode::Recursive)?;
     }
 
     if systemd_mode {
@@ -34,7 +72,26 @@ pub fn watch(watch_dirs: Vec<String>, user_dotfiles: &str, systemd_mode: bool) -
                         notify::event::DataChange::Content,
                     ))
                 {
-                    log::info!("Modified file: {:?}", event.paths.get(0));
+                    // Mirror each modified file into the user repo, then commit
+                    for p in &event.paths {
+                        if let Some(src) = p.as_path().to_str() {
+                            log::debug!("Event path: {}", src);
+                        }
+                        match mirror_modified_file(p.as_path(), &watch_dirs, user_dotfiles) {
+                            Ok(Some(dst)) => log::info!(
+                                "Mirrored modified file to repo: {:?}",
+                                dst.to_string_lossy()
+                            ),
+                            Ok(None) => log::warn!(
+                                "Modified file not under any watched dir: {:?}",
+                                p
+                            ),
+                            Err(e) => log::error!(
+                                "Failed to mirror modified file {:?}: {:?}",
+                                p, e
+                            ),
+                        }
+                    }
                     git_sync(user_dotfiles);
                 }
             }
