@@ -139,3 +139,88 @@ fn main() -> Result<()> {
 
     watcher::watch(watch_dirs, cli.user_dotfiles.as_str(), cli.systemd)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{Repository, Signature};
+    use std::fs::{self, File};
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn write_file(path: &Path, content: &str) {
+        let mut f = File::create(path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    fn init_repo_with_initial_commit(path: &Path) -> Repository {
+        let repo = Repository::init(path).unwrap();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Oxidots Test").unwrap();
+            cfg.set_str("user.email", "test@example.com").unwrap();
+        }
+
+        // Create an initial empty commit
+        {
+            let mut index = repo.index().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap_or_else(|_| {
+                Signature::now("Oxidots Test", "test@example.com").unwrap()
+            });
+            let _ = repo
+                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+            // tree dropped at end of this block before moving repo
+        }
+        repo
+    }
+
+    #[test]
+    fn verify_checks_directory() {
+        let t = TempDir::new().unwrap();
+        assert!(verify(t.path().to_str().unwrap()));
+        let missing = t.path().join("missing");
+        assert!(!verify(missing.to_str().unwrap()));
+    }
+
+    #[test]
+    fn copy_and_initial_sync_copies_contents() {
+        let src_root = TempDir::new().unwrap();
+        let nested = src_root.path().join("nvim").join("lua");
+        fs::create_dir_all(&nested).unwrap();
+        let file_a = nested.join("init.lua");
+        write_file(&file_a, "print('hello')\n");
+
+        let dst_repo_dir = TempDir::new().unwrap();
+        let watch_files = vec![src_root.path().to_str().unwrap().to_string()];
+
+        initial_sync(&watch_files, dst_repo_dir.path().to_str().unwrap());
+
+        let mirrored = dst_repo_dir
+            .path()
+            .join(src_root.path().file_name().unwrap())
+            .join("nvim")
+            .join("lua")
+            .join("init.lua");
+        let content = fs::read_to_string(mirrored).unwrap();
+        assert!(content.contains("hello"));
+    }
+
+    #[test]
+    fn git_sync_creates_new_commit() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = init_repo_with_initial_commit(repo_dir.path());
+
+        // Write a file to the workdir
+        let wd = repo.workdir().unwrap();
+        let f = wd.join("README.md");
+        write_file(&f, "test\n");
+
+        let before = repo.head().unwrap().target().unwrap();
+        git_sync(repo_dir.path().to_str().unwrap());
+        let after = repo.head().unwrap().target().unwrap();
+        assert_ne!(before, after, "HEAD should advance after git_sync");
+    }
+}

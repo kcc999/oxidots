@@ -1,18 +1,19 @@
 use sd_notify::{notify, NotifyState};
 use std::env;
+use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub fn notify_ready() -> Result<(), sd_notify::Error> {
+pub fn notify_ready() -> io::Result<()> {
     // Do not unset environment; let systemd reuse socket for future pings
     notify(false, &[NotifyState::Ready])
 }
 
-pub fn notify_status(status: &str) -> Result<(), sd_notify::Error> {
-    notify(false, &[NotifyState::Status(status.to_string())])
+pub fn notify_status(status: &str) -> io::Result<()> {
+    notify(false, &[NotifyState::Status(status)])
 }
 
-pub fn notify_stopping() -> Result<(), sd_notify::Error> {
+pub fn notify_stopping() -> io::Result<()> {
     notify(false, &[NotifyState::Stopping])
 }
 
