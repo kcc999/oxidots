@@ -2,12 +2,15 @@ use notify::{Event, Result, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc;
 
-use crate::git_ops::git_sync;
+use crate::git_sync;
 use crate::systemd;
 
 pub fn watch(watch_dirs: Vec<String>, user_dotfiles: &str, systemd_mode: bool) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Result<Event>>();
-    let mut watcher = notify::recommended_watcher(tx)?;
+    let mut watcher = notify::recommended_watcher(move |res| {
+        // Ignore send errors if receiver was dropped (shutdown)
+        let _ = tx.send(res);
+    })?;
 
     for file in watch_dirs.iter() {
         log::info!("Watching --> {:?}", file.as_str());

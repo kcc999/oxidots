@@ -1,4 +1,3 @@
-use std::env;
 use sd_notify::{notify, NotifyState};
 use std::env;
 use std::thread;
