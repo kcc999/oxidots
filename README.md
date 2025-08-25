@@ -64,16 +64,12 @@ oxidots <config_file> <dotfiles_repo> [--systemd]
 - `dotfiles_repo`: Path to a local directory where Oxidots mirrors directories and commits on change. If it is not a Git repo, Oxidots will initialize one automatically.
 - `--systemd`: Enables sd_notify readiness and optional watchdog pings; logs are sent to journald.
 
-Notes:
-- Initial snapshot: Oxidots performs an initial directory copy, and commits changes on subsequent file modifications. To force an immediate first commit, make a trivial change in one of the watched files (e.g., `touch <file>` and save) after startup.
 
 ## Build
 
 ```
 cargo build --release
 ```
-
-The resulting binary will be at `target/release/oxidots`.
 
 ## Tests
 
@@ -84,16 +80,3 @@ cargo test
 ```
 
 If you hit linker errors for `git2`/`libgit2`, install your system's development libraries (e.g., Debian/Ubuntu: `sudo apt install libgit2-dev pkg-config`) or ask to switch to a vendored `libgit2` build.
-
-## How It Works (brief)
-
-- Reads watch directories from the config file.
-- Performs an initial copy of each listed directory into `<dotfiles_repo>/<dirname>`.
-- Starts non-recursive file watchers on each listed directory.
-- On content modifications, stages all changes in `dotfiles_repo` and creates a commit.
-
-## Troubleshooting
-
-- No logs in systemd mode: Ensure the service runs with `--systemd`; check `journalctl -u oxidots`.
-- Watchdog timeouts: Increase `WatchdogSec` or check system load; Oxidots pings at half the watchdog interval.
-- No initial commit: The repo is initialized automatically if missing. The first commit happens on the first detected change; make a trivial edit to trigger it.
