@@ -5,6 +5,8 @@ pkgs.mkShell rec {
     pkgs.rustc
     pkgs.cargo
     pkgs.rust-analyzer
+    pkgs.pkg-config
+    pkgs.openssl.dev
   ];
 
   shellHook = ''
